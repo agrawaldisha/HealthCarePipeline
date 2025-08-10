@@ -18,5 +18,5 @@ options:
 
 substitutions:
   _DAGS_DIRECTORY: "workflows/"
-  _DAGS_BUCKET: "cloudcomposerbucket192294"  
+  _DAGS_BUCKET: "us-central1-demo-instance-6cf1f772-bucket"  
   _DATA_DIRECTORY: "data/"
