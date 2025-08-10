@@ -7,9 +7,9 @@ from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobO
 # Define constants
 PROJECT_ID = "gcpdataengineering-467713"
 LOCATION = "US"
-SQL_FILE_PATH_1 = "/home/airflow/gcs/data/BQ/bronze.sql"
-SQL_FILE_PATH_2 = "/home/airflow/gcs/data/BQ/silver.sql"
-SQL_FILE_PATH_3 = "/home/airflow/gcs/data/BQ/gold.sql"
+SQL_FILE_PATH_1 = "/home/airflow/gcs/data/bq/bronze.sql"
+SQL_FILE_PATH_2 = "/home/airflow/gcs/data/bq/silver.sql"
+SQL_FILE_PATH_3 = "/home/airflow/gcs/data/bq/gold.sql"
 
 # Read SQL query from file
 def read_sql_file(file_path):
@@ -23,7 +23,7 @@ GOLD_QUERY = read_sql_file(SQL_FILE_PATH_3)
 # Define default arguments
 ARGS = {
     "owner": "DISHA AGRAWAL",
-    "start_date": None,
+    "start_date": days_ago(1),  # corrected
     "depends_on_past": False,
     "email_on_failure": False,
     "email_on_retry": False,
@@ -33,7 +33,6 @@ ARGS = {
     "retry_delay": timedelta(minutes=5)
 }
 
-# Define the DAG
 with DAG(
     dag_id="bigquery_dag",
     schedule_interval=None,
@@ -42,7 +41,6 @@ with DAG(
     tags=["gcs", "bq", "etl", "marvel"]
 ) as dag:
 
-    # Task to create bronze table
     bronze_tables = BigQueryInsertJobOperator(
         task_id="bronze_tables",
         configuration={
@@ -54,7 +52,6 @@ with DAG(
         },
     )
 
-    # Task to create silver table
     silver_tables = BigQueryInsertJobOperator(
         task_id="silver_tables",
         configuration={
@@ -66,7 +63,6 @@ with DAG(
         },
     )
 
-    # Task to create gold table
     gold_tables = BigQueryInsertJobOperator(
         task_id="gold_tables",
         configuration={
@@ -78,6 +74,5 @@ with DAG(
         },
     )
 
-# Define dependencies
-bronze_tables >> silver_tables >> gold_tables
+    bronze_tables >> silver_tables >> gold_tables
 
