@@ -1,6 +1,6 @@
--- departments ==> full load +cdm
--- create the deaprtments for silver 
--- 1. Create table departments by Merge Data from Hospital A & B  
+-- ================================
+-- Departments (Full Load + CDM)
+-- ================================
 CREATE TABLE IF NOT EXISTS `gcpdataengineering-467713.silver_dataset.departments` (
     Dept_Id STRING,
     SRC_Dept_Id STRING,
@@ -8,25 +8,9 @@ CREATE TABLE IF NOT EXISTS `gcpdataengineering-467713.silver_dataset.departments
     datasource STRING,
     is_quarantined BOOLEAN
 );
--- If table is available truncate befire inserting
-truncate table `gcpdataengineering-467713.silver_dataset.departments`;
 
---creating full load department in silver layer. for common data model we need depatid take care that their is a existing department id.
--- Add the this a quarntine columns (to handle nulls)
-select distinct 
-  concat (deptid,'-',datasource) as Dept_id,deptid as 
-  src_dept_id , name, datasource,
-  case
-    when deptid is null or name is null then true
-    else false
-  end as is_quarantined
-  from
-    (select distinct * , 'hosa' as datasource from `gcpdataengineering-467713.bronze_dataset.departments_ha`
-    union all
-    select distinct * , 'hosb' as datasource from `gcpdataengineering-467713.bronze_dataset.departments_hb`
-    )
+TRUNCATE TABLE `gcpdataengineering-467713.silver_dataset.departments`;
 
--- 3. full load by Inserting merged Data 
 INSERT INTO `gcpdataengineering-467713.silver_dataset.departments`
 SELECT DISTINCT 
     CONCAT(deptid, '-', datasource) AS Dept_Id,
@@ -42,8 +26,10 @@ FROM (
     UNION ALL
     SELECT DISTINCT *, 'hosb' AS datasource FROM `gcpdataengineering-467713.bronze_dataset.departments_hb`
 );
--- Full load data for providers. full load
--- Create table providers by Merge Data from Hospital A & B  
+
+-- ================================
+-- Providers (Full Load)
+-- ================================
 CREATE TABLE IF NOT EXISTS `gcpdataengineering-467713.silver_dataset.providers` (
     ProviderID STRING,
     FirstName STRING,
@@ -55,10 +41,8 @@ CREATE TABLE IF NOT EXISTS `gcpdataengineering-467713.silver_dataset.providers` 
     is_quarantined BOOLEAN
 );
 
--- 2. Truncate Silver Table Before Inserting 
 TRUNCATE TABLE `gcpdataengineering-467713.silver_dataset.providers`;
 
--- 3. full load by Inserting merged Data 
 INSERT INTO `gcpdataengineering-467713.silver_dataset.providers`
 SELECT DISTINCT 
     ProviderID,
@@ -78,23 +62,9 @@ FROM (
     SELECT DISTINCT *, 'hosb' AS datasource FROM `gcpdataengineering-467713.bronze_dataset.providers_hb`
 );
 
-select distinct 
-  concat (ProviderID,'-',datasource) as Dept_id,deptid as 
-  src_dept_id , name, datasource,
-  case
-    when deptid is null or name is null then true
-    else false
-  end as is_quarantined
-  from
-    (select distinct * , 'hosa' as datasource from `gcpdataengineering-467713.bronze_dataset.departments_ha`
-    union all
-    select distinct * , 'hosb' as datasource from `gcpdataengineering-467713.bronze_dataset.departments_hb`
-    )
---------Incremetal load ----------------
-
-
-
--- 1. Create patients Table in BigQuery
+-- ================================
+-- Patients (Incremental / SCD Type 2)
+-- ================================
 CREATE TABLE IF NOT EXISTS `gcpdataengineering-467713.silver_dataset.patients` (
     Patient_Key STRING,
     SRC_PatientID STRING,
@@ -114,9 +84,7 @@ CREATE TABLE IF NOT EXISTS `gcpdataengineering-467713.silver_dataset.patients` (
     is_current BOOL
 );
 
-
---Create a quality_checks temp table
-CREATE OR REPLACE TABLE `gcpdataengineering-467713.silver_dataset.quality_checks` AS
+CREATE OR REPLACE TABLE `gcpdataengineering-467713.silver_dataset.quality_checks_patients` AS
 SELECT DISTINCT 
     CONCAT(SRC_PatientID, '-', datasource) AS Patient_Key,
     SRC_PatientID,
@@ -148,15 +116,12 @@ FROM (
         ModifiedDate,
         'hosa' AS datasource
     FROM `gcpdataengineering-467713.bronze_dataset.patients_ha`
-    
     UNION ALL
-
-
     SELECT DISTINCT 
         ID AS SRC_PatientID,
-        F_Name as FirstName,
-        L_Name as LastName,
-        M_Name as MiddleName,
+        F_Name AS FirstName,
+        L_Name AS LastName,
+        M_Name AS MiddleName,
         SSN,
         PhoneNumber,
         Gender,
@@ -167,15 +132,10 @@ FROM (
     FROM `gcpdataengineering-467713.bronze_dataset.patients_hb`
 );
 
-
--- 3. Apply SCD Type 2 Logic with MERGE
 MERGE INTO `gcpdataengineering-467713.silver_dataset.patients` AS target
-USING `gcpdataengineering-467713.silver_dataset.quality_checks` AS source
+USING `gcpdataengineering-467713.silver_dataset.quality_checks_patients` AS source
 ON target.Patient_Key = source.Patient_Key
 AND target.is_current = TRUE 
-
-
--- Step 1: Mark existing records as historical if any column has changed
 WHEN MATCHED AND (
     target.SRC_PatientID <> source.SRC_PatientID OR
     target.FirstName <> source.FirstName OR
@@ -193,56 +153,22 @@ WHEN MATCHED AND (
 THEN UPDATE SET 
     target.is_current = FALSE,
     target.modified_date = CURRENT_TIMESTAMP()
-
-
--- Step 2: Insert new and updated records as the latest active records
 WHEN NOT MATCHED 
 THEN INSERT (
-    Patient_Key,
-    SRC_PatientID,
-    FirstName,
-    LastName,
-    MiddleName,
-    SSN,
-    PhoneNumber,
-    Gender,
-    DOB,
-    Address,
-    SRC_ModifiedDate,
-    datasource,
-    is_quarantined,
-    inserted_date,
-    modified_date,
-    is_current
+    Patient_Key, SRC_PatientID, FirstName, LastName, MiddleName, SSN, PhoneNumber, Gender, DOB, Address,
+    SRC_ModifiedDate, datasource, is_quarantined, inserted_date, modified_date, is_current
 )
 VALUES (
-    source.Patient_Key,
-    source.SRC_PatientID,
-    source.FirstName,
-    source.LastName,
-    source.MiddleName,
-    source.SSN,
-    source.PhoneNumber,
-    source.Gender,
-    source.DOB,
-    source.Address,
-    source.SRC_ModifiedDate,
-    source.datasource,
-    source.is_quarantined,
-    CURRENT_TIMESTAMP(),  
-    CURRENT_TIMESTAMP(),  
-    TRUE 
+    source.Patient_Key, source.SRC_PatientID, source.FirstName, source.LastName, source.MiddleName,
+    source.SSN, source.PhoneNumber, source.Gender, source.DOB, source.Address, source.SRC_ModifiedDate,
+    source.datasource, source.is_quarantined, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), TRUE
 );
 
+DROP TABLE IF EXISTS `gcpdataengineering-467713.silver_dataset.quality_checks_patients`;
 
--- DROP quality_check table
-DROP TABLE IF EXISTS `gcpdataengineering-467713.silver_dataset.quality_checks`;
-
-
--------------------------------------------------------------------------------------------------------
-
-
--- 1. Create transactions Table in BigQuery
+-- ================================
+-- Transactions (Incremental / SCD Type 2)
+-- ================================
 CREATE TABLE IF NOT EXISTS `gcpdataengineering-467713.silver_dataset.transactions` (
     Transaction_Key STRING,
     SRC_TransactionID STRING,
@@ -273,30 +199,15 @@ CREATE TABLE IF NOT EXISTS `gcpdataengineering-467713.silver_dataset.transaction
     is_current BOOL
 );
 
-
--- 2. Create a quality_checks temp table
-CREATE OR REPLACE TABLE `gcpdataengineering-467713.silver_dataset.quality_checks` AS
+CREATE OR REPLACE TABLE `gcpdataengineering-467713.silver_dataset.quality_checks_transactions` AS
 SELECT DISTINCT 
     CONCAT(TransactionID, '-', datasource) AS Transaction_Key,
     TransactionID AS SRC_TransactionID,
-    EncounterID,
-    PatientID,
-    ProviderID,
-    DeptID,
-    VisitDate,
-    ServiceDate,
-    PaidDate,
-    VisitType,
-    Amount,
-    AmountType,
-    PaidAmount,
-    ClaimID,
-    PayorID,
-    ProcedureCode,
-    ICDCode,
-    LineOfBusiness,
-    MedicaidID,
-    MedicareID,
+    EncounterID, PatientID, ProviderID, DeptID,
+    VisitDate, ServiceDate, PaidDate, VisitType,
+    Amount, AmountType, PaidAmount, ClaimID,
+    PayorID, ProcedureCode, ICDCode, LineOfBusiness,
+    MedicaidID, MedicareID,
     InsertDate AS SRC_InsertDate,
     ModifiedDate AS SRC_ModifiedDate,
     datasource,
@@ -310,15 +221,10 @@ FROM (
     SELECT DISTINCT *, 'hosb' AS datasource FROM `gcpdataengineering-467713.bronze_dataset.transactions_hb`
 );
 
-
--- 3. Apply SCD Type 2 Logic with MERGE
 MERGE INTO `gcpdataengineering-467713.silver_dataset.transactions` AS target
-USING `gcpdataengineering-467713.silver_dataset.quality_checks` AS source
+USING `gcpdataengineering-467713.silver_dataset.quality_checks_transactions` AS source
 ON target.Transaction_Key = source.Transaction_Key
 AND target.is_current = TRUE 
-
-
--- Step 1: Mark existing records as historical if any column has changed
 WHEN MATCHED AND (
     target.SRC_TransactionID <> source.SRC_TransactionID OR
     target.EncounterID <> source.EncounterID OR
@@ -347,78 +253,26 @@ WHEN MATCHED AND (
 THEN UPDATE SET 
     target.is_current = FALSE,
     target.modified_date = CURRENT_TIMESTAMP()
-
-
--- Step 2: Insert new and updated records as the latest active records
 WHEN NOT MATCHED 
 THEN INSERT (
-    Transaction_Key,
-    SRC_TransactionID,
-    EncounterID,
-    PatientID,
-    ProviderID,
-    DeptID,
-    VisitDate,
-    ServiceDate,
-    PaidDate,
-    VisitType,
-    Amount,
-    AmountType,
-    PaidAmount,
-    ClaimID,
-    PayorID,
-    ProcedureCode,
-    ICDCode,
-    LineOfBusiness,
-    MedicaidID,
-    MedicareID,
-    SRC_InsertDate,
-    SRC_ModifiedDate,
-    datasource,
-    is_quarantined,
-    inserted_date,
-    modified_date,
-    is_current
+    Transaction_Key, SRC_TransactionID, EncounterID, PatientID, ProviderID, DeptID, VisitDate, ServiceDate,
+    PaidDate, VisitType, Amount, AmountType, PaidAmount, ClaimID, PayorID, ProcedureCode, ICDCode,
+    LineOfBusiness, MedicaidID, MedicareID, SRC_InsertDate, SRC_ModifiedDate, datasource,
+    is_quarantined, inserted_date, modified_date, is_current
 )
 VALUES (
-    source.Transaction_Key,
-    source.SRC_TransactionID,
-    source.EncounterID,
-    source.PatientID,
-    source.ProviderID,
-    source.DeptID,
-    source.VisitDate,
-    source.ServiceDate,
-    source.PaidDate,
-    source.VisitType,
-    source.Amount,
-    source.AmountType,
-    source.PaidAmount,
-    source.ClaimID,
-    source.PayorID,
-    source.ProcedureCode,
-    source.ICDCode,
-    source.LineOfBusiness,
-    source.MedicaidID,
-    source.MedicareID,
-    source.SRC_InsertDate,
-    source.SRC_ModifiedDate,
-    source.datasource,
-    source.is_quarantined,
-    CURRENT_TIMESTAMP(),  
-    CURRENT_TIMESTAMP(),  
-    TRUE 
+    source.Transaction_Key, source.SRC_TransactionID, source.EncounterID, source.PatientID, source.ProviderID,
+    source.DeptID, source.VisitDate, source.ServiceDate, source.PaidDate, source.VisitType, source.Amount,
+    source.AmountType, source.PaidAmount, source.ClaimID, source.PayorID, source.ProcedureCode, source.ICDCode,
+    source.LineOfBusiness, source.MedicaidID, source.MedicareID, source.SRC_InsertDate, source.SRC_ModifiedDate,
+    source.datasource, source.is_quarantined, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), TRUE
 );
 
+DROP TABLE IF EXISTS `gcpdataengineering-467713.silver_dataset.quality_checks_transactions`;
 
--- 4. DROP quality_check table
-DROP TABLE IF EXISTS `gcpdataengineering-467713.silver_dataset.quality_checks`;
-
-
--------------------------------------------------------------------------------------------------------
-
-
--- 1. Create the encounters Table in BigQuery
+-- ================================
+-- Encounters (Incremental / SCD Type 2)
+-- ================================
 CREATE TABLE IF NOT EXISTS `gcpdataengineering-467713.silver_dataset.encounters` (
     Encounter_Key STRING,
     SRC_EncounterID STRING,
@@ -436,8 +290,6 @@ CREATE TABLE IF NOT EXISTS `gcpdataengineering-467713.silver_dataset.encounters`
     is_current BOOL
 );
 
-
--- 2. Create a quality_checks temp table for encounters
 CREATE OR REPLACE TABLE `gcpdataengineering-467713.silver_dataset.quality_checks_encounters` AS
 SELECT DISTINCT 
     CONCAT(SRC_EncounterID, '-', datasource) AS Encounter_Key,
@@ -466,10 +318,7 @@ FROM (
         ModifiedDate,
         'hosa' AS datasource
     FROM `gcpdataengineering-467713.bronze_dataset.encounters_ha`
-    
     UNION ALL
-
-
     SELECT DISTINCT 
         EncounterID AS SRC_EncounterID,
         PatientID,
@@ -483,15 +332,10 @@ FROM (
     FROM `gcpdataengineering-467713.bronze_dataset.encounters_hb`
 );
 
-
--- 3. Apply SCD Type 2 Logic with MERGE
 MERGE INTO `gcpdataengineering-467713.silver_dataset.encounters` AS target
 USING `gcpdataengineering-467713.silver_dataset.quality_checks_encounters` AS source
 ON target.Encounter_Key = source.Encounter_Key
 AND target.is_current = TRUE 
-
-
--- Step 1: Mark existing records as historical if any column has changed
 WHEN MATCHED AND (
     target.SRC_EncounterID <> source.SRC_EncounterID OR
     target.PatientID <> source.PatientID OR
@@ -507,52 +351,24 @@ WHEN MATCHED AND (
 THEN UPDATE SET 
     target.is_current = FALSE,
     target.modified_date = CURRENT_TIMESTAMP()
-
-
--- Step 2: Insert new and updated records as the latest active records
 WHEN NOT MATCHED 
 THEN INSERT (
-    Encounter_Key,
-    SRC_EncounterID,
-    PatientID,
-    ProviderID,
-    DepartmentID,
-    EncounterDate,
-    EncounterType,
-    ProcedureCode,
-    SRC_ModifiedDate,
-    datasource,
-    is_quarantined,
-    inserted_date,
-    modified_date,
-    is_current
+    Encounter_Key, SRC_EncounterID, PatientID, ProviderID, DepartmentID, EncounterDate,
+    EncounterType, ProcedureCode, SRC_ModifiedDate, datasource, is_quarantined,
+    inserted_date, modified_date, is_current
 )
 VALUES (
-    source.Encounter_Key,
-    source.SRC_EncounterID,
-    source.PatientID,
-    source.ProviderID,
-    source.DepartmentID,
-    source.EncounterDate,
-    source.EncounterType,
-    source.ProcedureCode,
-    source.SRC_ModifiedDate,
-    source.datasource,
-    source.is_quarantined,
-    CURRENT_TIMESTAMP(),  
-    CURRENT_TIMESTAMP(),  
-    TRUE 
+    source.Encounter_Key, source.SRC_EncounterID, source.PatientID, source.ProviderID,
+    source.DepartmentID, source.EncounterDate, source.EncounterType, source.ProcedureCode,
+    source.SRC_ModifiedDate, source.datasource, source.is_quarantined,
+    CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), TRUE
 );
 
-
--- 4. DROP quality_check table
 DROP TABLE IF EXISTS `gcpdataengineering-467713.silver_dataset.quality_checks_encounters`;
 
-
--------------------------------------------------------------------------------------------------------
-
-
--- 1. Create the Claims Table in BigQuery
+-- ================================
+-- Claims (Incremental / SCD Type 2)
+-- ================================
 CREATE TABLE IF NOT EXISTS `gcpdataengineering-467713.silver_dataset.claims` (
     Claim_Key STRING,
     SRC_ClaimID STRING,
@@ -580,8 +396,6 @@ CREATE TABLE IF NOT EXISTS `gcpdataengineering-467713.silver_dataset.claims` (
     is_current BOOLEAN
 );
 
-
--- 2. Create a quality_checks temp table for claims
 CREATE OR REPLACE TABLE `gcpdataengineering-467713.silver_dataset.quality_checks_claims` AS
 SELECT 
     CONCAT(SRC_ClaimID, '-', datasource) AS Claim_Key,
@@ -632,15 +446,10 @@ FROM (
     FROM `gcpdataengineering-467713.bronze_dataset.claims`
 );
 
-
--- 3. Apply SCD Type 2 Logic with MERGE
 MERGE INTO `gcpdataengineering-467713.silver_dataset.claims` AS target
 USING `gcpdataengineering-467713.silver_dataset.quality_checks_claims` AS source
 ON target.Claim_Key = source.Claim_Key
 AND target.is_current = TRUE 
-
-
--- Step 1: Mark existing records as historical if any column has changed
 WHEN MATCHED AND (
     target.SRC_ClaimID <> source.SRC_ClaimID OR
     target.TransactionID <> source.TransactionID OR
@@ -665,72 +474,25 @@ WHEN MATCHED AND (
 THEN UPDATE SET 
     target.is_current = FALSE,
     target.modified_date = CURRENT_TIMESTAMP()
-
-
--- Step 2: Insert new and updated records as the latest active records
 WHEN NOT MATCHED 
 THEN INSERT (
-    Claim_Key,
-    SRC_ClaimID,
-    TransactionID,
-    PatientID,
-    EncounterID,
-    ProviderID,
-    DeptID,
-    ServiceDate,
-    ClaimDate,
-    PayorID,
-    ClaimAmount,
-    PaidAmount,
-    ClaimStatus,
-    PayorType,
-    Deductible,
-    Coinsurance,
-    Copay,
-    SRC_InsertDate,
-    SRC_ModifiedDate,
-    datasource,
-    is_quarantined,
-    inserted_date,
-    modified_date,
-    is_current
+    Claim_Key, SRC_ClaimID, TransactionID, PatientID, EncounterID, ProviderID, DeptID, ServiceDate,
+    ClaimDate, PayorID, ClaimAmount, PaidAmount, ClaimStatus, PayorType, Deductible, Coinsurance,
+    Copay, SRC_InsertDate, SRC_ModifiedDate, datasource, is_quarantined, inserted_date, modified_date, is_current
 )
 VALUES (
-    source.Claim_Key,
-    source.SRC_ClaimID,
-    source.TransactionID,
-    source.PatientID,
-    source.EncounterID,
-    source.ProviderID,
-    source.DeptID,
-    source.ServiceDate,
-    source.ClaimDate,
-    source.PayorID,
-    source.ClaimAmount,
-    source.PaidAmount,
-    source.ClaimStatus,
-    source.PayorType,
-    source.Deductible,
-    source.Coinsurance,
-    source.Copay,
-    source.SRC_InsertDate,
-    source.SRC_ModifiedDate,
-    source.datasource,
-    source.is_quarantined,
-    CURRENT_TIMESTAMP(),  
-    CURRENT_TIMESTAMP(),  
-    TRUE 
+    source.Claim_Key, source.SRC_ClaimID, source.TransactionID, source.PatientID, source.EncounterID,
+    source.ProviderID, source.DeptID, source.ServiceDate, source.ClaimDate, source.PayorID, source.ClaimAmount,
+    source.PaidAmount, source.ClaimStatus, source.PayorType, source.Deductible, source.Coinsurance, source.Copay,
+    source.SRC_InsertDate, source.SRC_ModifiedDate, source.datasource, source.is_quarantined, CURRENT_TIMESTAMP(),
+    CURRENT_TIMESTAMP(), TRUE
 );
 
-
--- 4. DROP quality_check table
 DROP TABLE IF EXISTS `gcpdataengineering-467713.silver_dataset.quality_checks_claims`;
 
-
--------------------------------------------------------------------------------------------------------
-
-
--- 1. Create the CP Codes Silver Table in BigQuery
+-- ================================
+-- CPT Codes (Incremental / SCD Type 2)
+-- ================================
 CREATE TABLE IF NOT EXISTS `gcpdataengineering-467713.silver_dataset.cpt_codes` (
     CP_Code_Key STRING,
     procedure_code_category STRING,
@@ -744,8 +506,6 @@ CREATE TABLE IF NOT EXISTS `gcpdataengineering-467713.silver_dataset.cpt_codes` 
     is_current BOOLEAN
 );
 
-
--- 2. Create a quality_checks temp table for CP Codes
 CREATE OR REPLACE TABLE `gcpdataengineering-467713.silver_dataset.quality_checks_cpt_codes` AS
 SELECT 
     CONCAT(cpt_codes, '-', datasource) AS CP_Code_Key,
@@ -754,7 +514,6 @@ SELECT
     procedure_code_descriptions,
     code_status,
     datasource,
-    -- Define a quarantine condition (null values in key fields)
     CASE 
         WHEN cpt_codes IS NULL OR LOWER(code_status) = 'null' THEN TRUE
         ELSE FALSE
@@ -769,15 +528,10 @@ FROM (
     FROM `gcpdataengineering-467713.bronze_dataset.cpt_codes`
 );
 
-
--- 3. Apply SCD Type 2 Logic with MERGE
 MERGE INTO `gcpdataengineering-467713.silver_dataset.cpt_codes` AS target
 USING `gcpdataengineering-467713.silver_dataset.quality_checks_cpt_codes` AS source
 ON target.CP_Code_Key = source.CP_Code_Key
 AND target.is_current = TRUE 
-
-
--- Step 1: Mark existing records as historical if any column has changed
 WHEN MATCHED AND (
     target.procedure_code_category <> source.procedure_code_category OR
     target.cpt_codes <> source.cpt_codes OR
@@ -789,36 +543,14 @@ WHEN MATCHED AND (
 THEN UPDATE SET 
     target.is_current = FALSE,
     target.modified_date = CURRENT_TIMESTAMP()
-
-
--- Step 2: Insert new and updated records as the latest active records
 WHEN NOT MATCHED 
 THEN INSERT (
-    CP_Code_Key,
-    procedure_code_category,
-    cpt_codes,
-    procedure_code_descriptions,
-    code_status,
-    datasource,
-    is_quarantined,
-    inserted_date,
-    modified_date,
-    is_current
+    CP_Code_Key, procedure_code_category, cpt_codes, procedure_code_descriptions, code_status, datasource,
+    is_quarantined, inserted_date, modified_date, is_current
 )
 VALUES (
-    source.CP_Code_Key,
-    source.procedure_code_category,
-    source.cpt_codes,
-    source.procedure_code_descriptions,
-    source.code_status,
-    source.datasource,
-    source.is_quarantined,
-    CURRENT_TIMESTAMP(),  
-    CURRENT_TIMESTAMP(),  
-    TRUE 
+    source.CP_Code_Key, source.procedure_code_category, source.cpt_codes, source.procedure_code_descriptions,
+    source.code_status, source.datasource, source.is_quarantined, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), TRUE
 );
 
-
--- 4. DROP quality_check table
 DROP TABLE IF EXISTS `gcpdataengineering-467713.silver_dataset.quality_checks_cpt_codes`;
-
