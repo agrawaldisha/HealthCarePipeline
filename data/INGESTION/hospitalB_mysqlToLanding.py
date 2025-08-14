@@ -8,6 +8,7 @@ from google.cloud import storage, bigquery
 from pyspark.sql import SparkSession
 import datetime
 import json
+import numpy
 
 # Initialize GCS & BigQuery Clients
 storage_client = storage.Client()
